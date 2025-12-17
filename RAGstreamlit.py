@@ -1,22 +1,15 @@
-# RAGstreamlit.py
+# RAGstreamlit_DeepSeek.py
 import os
 import tempfile
 from typing import List
 
 import streamlit as st
+import requests
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-
-# 🔄 CHANGED: embeddings (OpenAI → HuggingFace)
 from langchain_community.embeddings import HuggingFaceEmbeddings
-
-# 🔄 CHANGED: LLM still ChatOpenAI but used for DeepSeek
-from langchain_openai import ChatOpenAI
-
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
 
 st.set_page_config(
@@ -31,10 +24,6 @@ st.set_page_config(
 st.sidebar.header("🔑 DeepSeek API Key")
 deepseek_key = st.sidebar.text_input("Enter DeepSeek API key", type="password")
 
-if deepseek_key:
-    os.environ["OPENAI_API_KEY"] = deepseek_key  # required by langchain_openai
-
-
 # -------------------------
 # Helper: save uploaded file
 # -------------------------
@@ -43,7 +32,6 @@ def save_uploaded_file(uploaded_file) -> str:
     tf.write(uploaded_file.getbuffer())
     tf.close()
     return tf.name
-
 
 # -------------------------
 # Build vectorstore
@@ -54,10 +42,8 @@ def build_vectorstore_from_pdf_paths(pdf_paths: List[str]):
     for p in pdf_paths:
         loader = PyPDFLoader(p)
         docs = loader.load()
-
         for d in docs:
             d.metadata["source"] = os.path.basename(p)
-
         all_docs.extend(docs)
 
     if not all_docs:
@@ -70,7 +56,6 @@ def build_vectorstore_from_pdf_paths(pdf_paths: List[str]):
 
     chunks = splitter.split_documents(all_docs)
 
-    # 🔄 CHANGED: FREE embeddings (NO API, NO BILLING)
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
@@ -78,6 +63,25 @@ def build_vectorstore_from_pdf_paths(pdf_paths: List[str]):
     vectorstore = FAISS.from_documents(chunks, embeddings)
     return vectorstore
 
+# -------------------------
+# DeepSeek LLM wrapper
+# -------------------------
+class DeepSeekLLM:
+    def __init__(self, api_key, model="deepseek-chat"):
+        self.api_key = api_key
+        self.model = model
+        self.url = "https://api.deepseek.com/v1/chat/completions"
+
+    def __call__(self, prompt: str) -> str:
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0
+        }
+        response = requests.post(self.url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
 
 # -------------------------
 # UI
@@ -97,7 +101,6 @@ uploaded_files = st.file_uploader(
 if "vector_db" not in st.session_state:
     st.session_state.vector_db = None
 
-
 # Index button
 if uploaded_files and st.button("Index uploaded resumes ✅"):
     with st.spinner("Indexing resumes..."):
@@ -108,10 +111,7 @@ if uploaded_files and st.button("Index uploaded resumes ✅"):
         except Exception as e:
             st.error(f"Indexing failed: {e}")
 
-
-# -------------------------
 # Search (RAG)
-# -------------------------
 if st.session_state.vector_db:
     query = st.text_input("Ask a question about candidates")
 
@@ -122,40 +122,30 @@ if st.session_state.vector_db:
             st.warning("Please enter a query")
         else:
             with st.spinner("Searching..."):
+                # Retrieve top chunks
                 retriever = st.session_state.vector_db.as_retriever(
                     search_type="similarity",
                     search_kwargs={"k": 4}
                 )
+                docs = retriever.get_relevant_documents(query)
+                context_text = "\n\n".join([d.page_content for d in docs])
 
-                # 🔄 CHANGED: DeepSeek LLM
-                llm = ChatOpenAI(
-                    model="deepseek-chat",
-                    base_url="https://api.deepseek.com",
-                    api_key=deepseek_key,
-                    temperature=0
-                )
+                # Build prompt
+                prompt_text = f"""
+                Use the following resume context to answer the question.
+                If the answer is not found, say so clearly.
 
-                prompt = ChatPromptTemplate.from_template(
-                    """
-                    Use the following resume context to answer the question.
-                    If the answer is not found, say so clearly.
+                Context:
+                {context_text}
 
-                    Context:
-                    {context}
+                Question:
+                {query}
+                """
 
-                    Question:
-                    {question}
-                    """
-                )
-
-                chain = (
-                    {"context": retriever, "question": lambda x: x}
-                    | prompt
-                    | llm
-                    | StrOutputParser()
-                )
-
-                answer = chain.invoke(query)
-
-                st.subheader("✅ Answer")
-                st.write(answer)
+                try:
+                    llm = DeepSeekLLM(deepseek_key)
+                    answer = llm(prompt_text)
+                    st.subheader("✅ Answer")
+                    st.write(answer)
+                except requests.HTTPError as e:
+                    st.error(f"DeepSeek API error: {e}")
