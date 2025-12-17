@@ -8,7 +8,12 @@ import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+
+# 🔄 CHANGED: embeddings (OpenAI → HuggingFace)
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+# 🔄 CHANGED: LLM still ChatOpenAI but used for DeepSeek
+from langchain_openai import ChatOpenAI
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -23,11 +28,11 @@ st.set_page_config(
 # -------------------------
 # Sidebar / API key
 # -------------------------
-st.sidebar.header("🔑 OpenAI API Key")
-openai_key = st.sidebar.text_input("Enter OpenAI API key", type="password")
+st.sidebar.header("🔑 DeepSeek API Key")
+deepseek_key = st.sidebar.text_input("Enter DeepSeek API key", type="password")
 
-if openai_key:
-    os.environ["OPENAI_API_KEY"] = openai_key
+if deepseek_key:
+    os.environ["OPENAI_API_KEY"] = deepseek_key  # required by langchain_openai
 
 
 # -------------------------
@@ -65,9 +70,12 @@ def build_vectorstore_from_pdf_paths(pdf_paths: List[str]):
 
     chunks = splitter.split_documents(all_docs)
 
-    embeddings = OpenAIEmbeddings()
-    vectorstore = FAISS.from_documents(chunks, embeddings)
+    # 🔄 CHANGED: FREE embeddings (NO API, NO BILLING)
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
 
+    vectorstore = FAISS.from_documents(chunks, embeddings)
     return vectorstore
 
 
@@ -102,14 +110,14 @@ if uploaded_files and st.button("Index uploaded resumes ✅"):
 
 
 # -------------------------
-# Search (LCEL – Modern RAG)
+# Search (RAG)
 # -------------------------
 if st.session_state.vector_db:
     query = st.text_input("Ask a question about candidates")
 
     if st.button("Search 🔎"):
-        if not openai_key:
-            st.warning("Please enter your OpenAI API key")
+        if not deepseek_key:
+            st.warning("Please enter your DeepSeek API key")
         elif not query.strip():
             st.warning("Please enter a query")
         else:
@@ -119,8 +127,11 @@ if st.session_state.vector_db:
                     search_kwargs={"k": 4}
                 )
 
+                # 🔄 CHANGED: DeepSeek LLM
                 llm = ChatOpenAI(
-                    model="gpt-4o-mini",
+                    model="deepseek-chat",
+                    base_url="https://api.deepseek.com",
+                    api_key=deepseek_key,
                     temperature=0
                 )
 
