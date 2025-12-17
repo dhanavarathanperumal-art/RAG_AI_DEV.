@@ -9,7 +9,9 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.chains.retrieval_qa.base import RetrievalQA
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langchain.schema import Document
 
 st.set_page_config(
@@ -39,7 +41,7 @@ def save_uploaded_file(uploaded_file) -> str:
 
 
 # -------------------------
-# Build vectorstore (NO cache for FAISS)
+# Build vectorstore
 # -------------------------
 def build_vectorstore_from_pdf_paths(pdf_paths: List[str]):
     all_docs: List[Document] = []
@@ -60,6 +62,7 @@ def build_vectorstore_from_pdf_paths(pdf_paths: List[str]):
         chunk_size=1000,
         chunk_overlap=200
     )
+
     chunks = splitter.split_documents(all_docs)
 
     embeddings = OpenAIEmbeddings()
@@ -98,7 +101,9 @@ if uploaded_files and st.button("Index uploaded resumes ✅"):
             st.error(f"Indexing failed: {e}")
 
 
-# Search
+# -------------------------
+# Search (LCEL – Modern RAG)
+# -------------------------
 if st.session_state.vector_db:
     query = st.text_input("Ask a question about candidates")
 
@@ -119,20 +124,27 @@ if st.session_state.vector_db:
                     temperature=0
                 )
 
-                qa = RetrievalQA.from_chain_type(
-                    llm=llm,
-                    retriever=retriever,
-                    return_source_documents=True
+                prompt = ChatPromptTemplate.from_template(
+                    """
+                    Use the following resume context to answer the question.
+                    If the answer is not found, say so clearly.
+
+                    Context:
+                    {context}
+
+                    Question:
+                    {question}
+                    """
                 )
 
-                result = qa({"query": query})
+                chain = (
+                    {"context": retriever, "question": lambda x: x}
+                    | prompt
+                    | llm
+                    | StrOutputParser()
+                )
 
-                answer = result.get("result") or result.get("answer")
+                answer = chain.invoke(query)
 
                 st.subheader("✅ Answer")
                 st.write(answer)
-
-                st.subheader("📄 Source Documents")
-                for i, doc in enumerate(result["source_documents"], 1):
-                    st.markdown(f"**{i}. {doc.metadata.get('source')}**")
-                    st.code(doc.page_content[:500])
