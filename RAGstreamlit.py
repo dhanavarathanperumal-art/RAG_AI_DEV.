@@ -128,9 +128,9 @@ if st.session_state.vector_db:
                     search_kwargs={"k": 4}
                 )
                 try:
-                docs = retriever.get_relevant_documents(query)
+                    docs = retriever.get_relevant_documents(query)
                 except AttributeError:
-                docs = retriever(query) 
+                    docs = retriever(query) 
 
                 context_text = "\n\n".join([d.page_content for d in docs])
 
