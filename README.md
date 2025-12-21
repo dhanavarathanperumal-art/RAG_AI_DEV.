@@ -1,4 +1,4 @@
-# RAG AI FRAME WORK .
+# RAG FRAME WORK .
 Creating a RAG framework.
 STEPS :
 Upload multiple PDF resumes
